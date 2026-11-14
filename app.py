@@ -1,6 +1,7 @@
 import uuid
 import streamlit as st
 from supabase import create_client
+from streamlit_cookies_controller import CookieController
 
 st.set_page_config(page_title="Accompagnement-Lux", page_icon="🎓")
 
@@ -13,6 +14,11 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 client = st.session_state.client
+
+# Cookie de reconnexion (7 jours) pour rester connectée après un rechargement
+controller = CookieController()
+NOM_COOKIE = "refresh_token"
+DUREE_COOKIE = 7 * 24 * 3600
 
 # ---------- Données du parcours ----------
 ETAPES_MASTER = [
@@ -54,6 +60,7 @@ def se_connecter(email, mot_de_passe):
             {"email": email, "password": mot_de_passe}
         )
         st.session_state.user = res.user
+        st.session_state.pas_de_restauration = False
         st.rerun()
     except Exception:
         st.error("Connexion impossible : vérifie ton email et ton mot de passe.")
@@ -71,8 +78,12 @@ def creer_compte(email, mot_de_passe):
 
 
 def se_deconnecter():
-    client.auth.sign_out()
+    try:
+        client.auth.sign_out()
+    except Exception:
+        pass
     st.session_state.user = None
+    st.session_state.deconnecte = True
 
 
 # ---------- Dossiers ----------
@@ -290,6 +301,23 @@ def vue_accompagnateur(code=None):
     afficher_dossier(choix, "staff", par_id[choix]["candidat_id"])
 
 
+# ---------- Reconnexion automatique après un rechargement ----------
+if st.session_state.get("deconnecte"):
+    # Déconnexion demandée : on efface le cookie de reconnexion
+    controller.remove(NOM_COOKIE)
+    st.session_state.deconnecte = False
+    st.session_state.pas_de_restauration = True
+elif st.session_state.user is None and not st.session_state.get("pas_de_restauration"):
+    jeton = controller.get(NOM_COOKIE)
+    if jeton:
+        try:
+            res = client.auth.refresh_session(jeton)
+            st.session_state.user = res.user
+        except Exception:
+            # Cookie expiré ou invalide : on l'efface et on affiche la connexion
+            controller.remove(NOM_COOKIE)
+            st.session_state.pas_de_restauration = True
+
 # ---------- Page principale ----------
 st.title("🎓 Accompagnement-Lux")
 
@@ -311,6 +339,12 @@ if st.session_state.user is None:
             creer_compte(email2, mdp2)
 else:
     user = st.session_state.user
+
+    # Garde le cookie à jour avec la clé de reconnexion actuelle
+    session = client.auth.get_session()
+    if session and controller.get(NOM_COOKIE) != session.refresh_token:
+        controller.set(NOM_COOKIE, session.refresh_token, max_age=DUREE_COOKIE)
+
     profil = client.table("profiles").select("*").eq("id", user.id).execute().data
     role = profil[0]["role"] if profil else "inconnu"
     code_perso = profil[0].get("code_accompagnateur") if profil else None
