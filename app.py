@@ -100,7 +100,10 @@ def supprimer_document(doc):
     client.table("documents").delete().eq("id", doc["id"]).execute()
 
 
-def afficher_dossier(dossier_id):
+def afficher_dossier(dossier_id, prefixe):
+    # Le préfixe rend les identifiants uniques quand le même dossier
+    # apparaît dans deux onglets (cas de l'administrateur)
+
     # --- Étapes ---
     st.subheader("Étapes du parcours")
     etapes = (
@@ -114,7 +117,7 @@ def afficher_dossier(dossier_id):
     for e in etapes:
         col1, col2 = st.columns([3, 1])
         col1.write(f"**{e['ordre']}.** {e['titre']}")
-        cle = f"statut_{e['id']}"
+        cle = f"{prefixe}_statut_{e['id']}"
         col2.selectbox(
             "Statut",
             list(STATUTS),
@@ -132,14 +135,14 @@ def afficher_dossier(dossier_id):
         "Type de document",
         list(TYPES_DOCUMENTS),
         format_func=lambda t: TYPES_DOCUMENTS[t],
-        key=f"type_{dossier_id}",
+        key=f"{prefixe}_type_{dossier_id}",
     )
     fichier = st.file_uploader(
         "Choisis un fichier (PDF, JPG ou PNG)",
         type=["pdf", "jpg", "jpeg", "png"],
-        key=f"fichier_{dossier_id}",
+        key=f"{prefixe}_fichier_{dossier_id}",
     )
-    if fichier and st.button("Envoyer le document", key=f"envoi_{dossier_id}"):
+    if fichier and st.button("Envoyer le document", key=f"{prefixe}_envoi_{dossier_id}"):
         extension = fichier.name.rsplit(".", 1)[-1].lower()
         chemin = f"{dossier_id}/{uuid.uuid4()}.{extension}"
         try:
@@ -180,7 +183,7 @@ def afficher_dossier(dossier_id):
                 col2.link_button("Ouvrir", lien)
         except Exception:
             col2.write("—")
-        if col3.button("Supprimer", key=f"suppr_{d['id']}"):
+        if col3.button("Supprimer", key=f"{prefixe}_suppr_{d['id']}"):
             supprimer_document(d)
             st.rerun()
 
@@ -205,7 +208,7 @@ def vue_candidat(user):
     else:
         dossier = dossiers[0]
         st.write(f"Dossier : **{NIVEAUX[dossier['niveau']]}**")
-        afficher_dossier(dossier["id"])
+        afficher_dossier(dossier["id"], "candidat")
 
 
 def vue_accompagnateur():
@@ -220,7 +223,7 @@ def vue_accompagnateur():
         for d in dossiers
     }
     choix = st.selectbox("Dossier", list(options), format_func=lambda i: options[i])
-    afficher_dossier(choix)
+    afficher_dossier(choix, "staff")
 
 
 # ---------- Page principale ----------
