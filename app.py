@@ -96,13 +96,23 @@ def maj_statut(etape_id, cle):
 
 
 def supprimer_document(doc):
-    client.storage.from_("documents").remove([doc["chemin_storage"]])
-    client.table("documents").delete().eq("id", doc["id"]).execute()
+    # La base décide qui a le droit de supprimer : si ce n'est pas autorisé,
+    # aucune ligne n'est supprimée et le fichier n'est pas touché
+    res = client.table("documents").delete().eq("id", doc["id"]).execute()
+    if res.data:
+        client.storage.from_("documents").remove([doc["chemin_storage"]])
+        return True
+    st.error("Suppression non autorisée.")
+    return False
 
 
-def afficher_dossier(dossier_id, prefixe):
-    # Le préfixe rend les identifiants uniques quand le même dossier
-    # apparaît dans deux onglets (cas de l'administrateur)
+def masquer_document(doc):
+    client.table("documents_masques").insert({"document_id": doc["id"]}).execute()
+
+
+def afficher_dossier(dossier_id, prefixe, candidat_id):
+    moi = st.session_state.user.id
+    proprietaire = moi == candidat_id
 
     # --- Étapes ---
     st.subheader("Étapes du parcours")
@@ -169,10 +179,18 @@ def afficher_dossier(dossier_id, prefixe):
         .execute()
         .data
     )
+    # Les documents que j'ai retirés de ma liste (visible par moi seulement)
+    masques = {
+        m["document_id"]
+        for m in client.table("documents_masques").select("document_id").execute().data
+    }
+    if not proprietaire:
+        documents = [d for d in documents if d["id"] not in masques]
+
     if not documents:
         st.info("Aucun document pour le moment.")
     for d in documents:
-        col1, col2, col3 = st.columns([3, 1, 1])
+        col1, col2, col3 = st.columns([3, 1, 1.4])
         col1.write(f"**{TYPES_DOCUMENTS.get(d['type'], d['type'])}** : {d['nom_fichier']}")
         try:
             res = client.storage.from_("documents").create_signed_url(
@@ -183,9 +201,16 @@ def afficher_dossier(dossier_id, prefixe):
                 col2.link_button("Ouvrir", lien)
         except Exception:
             col2.write("—")
-        if col3.button("Supprimer", key=f"{prefixe}_suppr_{d['id']}"):
-            supprimer_document(d)
-            st.rerun()
+
+        peut_supprimer = proprietaire or d.get("depose_par") == moi
+        if peut_supprimer:
+            if col3.button("Supprimer", key=f"{prefixe}_suppr_{d['id']}"):
+                if supprimer_document(d):
+                    st.rerun()
+        else:
+            if col3.button("Retirer de ma liste", key=f"{prefixe}_masquer_{d['id']}"):
+                masquer_document(d)
+                st.rerun()
 
 
 def vue_candidat(user):
@@ -208,7 +233,7 @@ def vue_candidat(user):
     else:
         dossier = dossiers[0]
         st.write(f"Dossier : **{NIVEAUX[dossier['niveau']]}**")
-        afficher_dossier(dossier["id"], "candidat")
+        afficher_dossier(dossier["id"], "candidat", dossier["candidat_id"])
 
 
 def vue_accompagnateur():
@@ -218,12 +243,13 @@ def vue_accompagnateur():
         return
     profils = client.table("profiles").select("id, email").execute().data
     emails = {p["id"]: p["email"] for p in profils}
+    par_id = {d["id"]: d for d in dossiers}
     options = {
         d["id"]: f"{emails.get(d['candidat_id'], 'Candidat')} : {NIVEAUX[d['niveau']]}"
         for d in dossiers
     }
     choix = st.selectbox("Dossier", list(options), format_func=lambda i: options[i])
-    afficher_dossier(choix, "staff")
+    afficher_dossier(choix, "staff", par_id[choix]["candidat_id"])
 
 
 # ---------- Page principale ----------
