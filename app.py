@@ -230,22 +230,60 @@ def vue_candidat(user):
                 st.rerun()
             except Exception as e:
                 st.error(f"Création impossible : {e}")
+        return
+
+    dossier = dossiers[0]
+    st.write(f"Dossier : **{NIVEAUX[dossier['niveau']]}**")
+
+    # --- Mon accompagnateur ---
+    st.subheader("Mon accompagnateur")
+    if dossier["accompagnateur_id"]:
+        st.success("Un accompagnateur a accès à ton dossier.")
+        if st.button("Retirer l'accès à mon accompagnateur", key="retirer_acc"):
+            client.rpc("retirer_accompagnateur").execute()
+            st.rerun()
     else:
-        dossier = dossiers[0]
-        st.write(f"Dossier : **{NIVEAUX[dossier['niveau']]}**")
-        afficher_dossier(dossier["id"], "candidat", dossier["candidat_id"])
+        code = st.text_input("Code de ton accompagnateur", key="code_acc")
+        if st.button("Me rattacher à mon accompagnateur", key="rattacher_acc"):
+            try:
+                res = client.rpc("rattacher_accompagnateur", {"p_code": code}).execute()
+                if res.data:
+                    st.rerun()
+                else:
+                    st.error("Code inconnu. Vérifie-le auprès de ton accompagnateur.")
+            except Exception as e:
+                st.error(f"Rattachement impossible : {e}")
+
+    afficher_dossier(dossier["id"], "candidat", dossier["candidat_id"])
 
 
-def vue_accompagnateur():
+def vue_accompagnateur(code=None):
+    if code:
+        st.write("Ton code personnel, à donner à tes candidats :")
+        st.code(code, language=None)
+
     dossiers = client.table("dossiers").select("*").execute().data
     if not dossiers:
         st.info("Aucun dossier pour le moment.")
         return
+
     profils = client.table("profiles").select("id, email").execute().data
     emails = {p["id"]: p["email"] for p in profils}
+
+    # Progression de chaque dossier (étapes terminées / total)
+    etapes = client.table("etapes").select("dossier_id, statut").execute().data
+    total, faites = {}, {}
+    for e in etapes:
+        total[e["dossier_id"]] = total.get(e["dossier_id"], 0) + 1
+        if e["statut"] == "terminee":
+            faites[e["dossier_id"]] = faites.get(e["dossier_id"], 0) + 1
+
     par_id = {d["id"]: d for d in dossiers}
     options = {
-        d["id"]: f"{emails.get(d['candidat_id'], 'Candidat')} : {NIVEAUX[d['niveau']]}"
+        d["id"]: (
+            f"{emails.get(d['candidat_id'], 'Candidat')} : {NIVEAUX[d['niveau']]}"
+            f" · {faites.get(d['id'], 0)}/{total.get(d['id'], 0)} étapes terminées"
+        )
         for d in dossiers
     }
     choix = st.selectbox("Dossier", list(options), format_func=lambda i: options[i])
@@ -275,6 +313,7 @@ else:
     user = st.session_state.user
     profil = client.table("profiles").select("*").eq("id", user.id).execute().data
     role = profil[0]["role"] if profil else "inconnu"
+    code_perso = profil[0].get("code_accompagnateur") if profil else None
 
     st.caption(f"Connectée : {user.email} · rôle : {role}")
     st.button("Se déconnecter", on_click=se_deconnecter)
@@ -282,7 +321,7 @@ else:
     if role == "candidat":
         vue_candidat(user)
     elif role == "accompagnateur":
-        vue_accompagnateur()
+        vue_accompagnateur(code_perso)
     elif role == "admin":
         onglet1, onglet2 = st.tabs(["Mon dossier (test)", "Tous les dossiers"])
         with onglet1:
