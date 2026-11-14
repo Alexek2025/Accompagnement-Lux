@@ -1,9 +1,10 @@
+import uuid
 import streamlit as st
 from supabase import create_client
 
 st.set_page_config(page_title="Accompagnement-Lux", page_icon="🎓")
 
-# Un client Supabase par visiteur (jamais partagé entre utilisateurs)
+# ---------- Connexion à Supabase (un client par visiteur) ----------
 if "client" not in st.session_state:
     st.session_state.client = create_client(
         st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
@@ -13,7 +14,40 @@ if "user" not in st.session_state:
 
 client = st.session_state.client
 
+# ---------- Données du parcours ----------
+ETAPES_MASTER = [
+    "Rassembler les documents (passeport, diplômes, relevés de notes, certificat de langue B2)",
+    "Choisir jusqu'à 3 programmes",
+    "Déposer les demandes d'admission (100 € par programme)",
+    "Attendre la décision de l'université",
+    "Recevoir la lettre d'admission",
+    "Faire l'équivalence de diplôme",
+    "Demander le visa",
+    "S'inscrire à l'université",
+]
+ETAPES_LICENCE = [
+    "Rassembler les documents (passeport, diplômes, relevés de notes, certificat de langue B2)",
+    "Faire l'équivalence de diplôme",
+    "Choisir jusqu'à 3 programmes",
+    "Déposer les demandes d'admission (100 € par programme)",
+    "Attendre la décision de l'université",
+    "Recevoir la lettre d'admission",
+    "Demander le visa",
+    "S'inscrire à l'université",
+]
+TYPES_DOCUMENTS = {
+    "passeport": "Passeport",
+    "diplome": "Diplôme",
+    "releve_notes": "Relevé de notes",
+    "certificat_langue": "Certificat de langue (B2)",
+    "lettre_admission": "Lettre d'admission",
+    "autre": "Autre",
+}
+STATUTS = {"a_faire": "À faire", "en_cours": "En cours", "terminee": "Terminée"}
+NIVEAUX = {"master": "Master", "licence": "Licence"}
 
+
+# ---------- Connexion / inscription ----------
 def se_connecter(email, mot_de_passe):
     try:
         res = client.auth.sign_in_with_password(
@@ -39,9 +73,157 @@ def creer_compte(email, mot_de_passe):
 def se_deconnecter():
     client.auth.sign_out()
     st.session_state.user = None
-    st.rerun()
 
 
+# ---------- Dossiers ----------
+def creer_dossier(user_id, niveau):
+    res = client.table("dossiers").insert(
+        {"candidat_id": user_id, "niveau": niveau}
+    ).execute()
+    dossier_id = res.data[0]["id"]
+    modele = ETAPES_MASTER if niveau == "master" else ETAPES_LICENCE
+    lignes = [
+        {"dossier_id": dossier_id, "ordre": i + 1, "titre": titre}
+        for i, titre in enumerate(modele)
+    ]
+    client.table("etapes").insert(lignes).execute()
+
+
+def maj_statut(etape_id, cle):
+    client.table("etapes").update({"statut": st.session_state[cle]}).eq(
+        "id", etape_id
+    ).execute()
+
+
+def supprimer_document(doc):
+    client.storage.from_("documents").remove([doc["chemin_storage"]])
+    client.table("documents").delete().eq("id", doc["id"]).execute()
+
+
+def afficher_dossier(dossier_id):
+    # --- Étapes ---
+    st.subheader("Étapes du parcours")
+    etapes = (
+        client.table("etapes")
+        .select("*")
+        .eq("dossier_id", dossier_id)
+        .order("ordre")
+        .execute()
+        .data
+    )
+    for e in etapes:
+        col1, col2 = st.columns([3, 1])
+        col1.write(f"**{e['ordre']}.** {e['titre']}")
+        cle = f"statut_{e['id']}"
+        col2.selectbox(
+            "Statut",
+            list(STATUTS),
+            index=list(STATUTS).index(e["statut"]),
+            format_func=lambda s: STATUTS[s],
+            key=cle,
+            label_visibility="collapsed",
+            on_change=maj_statut,
+            args=(e["id"], cle),
+        )
+
+    # --- Documents ---
+    st.subheader("Documents")
+    type_doc = st.selectbox(
+        "Type de document",
+        list(TYPES_DOCUMENTS),
+        format_func=lambda t: TYPES_DOCUMENTS[t],
+        key=f"type_{dossier_id}",
+    )
+    fichier = st.file_uploader(
+        "Choisis un fichier (PDF, JPG ou PNG)",
+        type=["pdf", "jpg", "jpeg", "png"],
+        key=f"fichier_{dossier_id}",
+    )
+    if fichier and st.button("Envoyer le document", key=f"envoi_{dossier_id}"):
+        extension = fichier.name.rsplit(".", 1)[-1].lower()
+        chemin = f"{dossier_id}/{uuid.uuid4()}.{extension}"
+        try:
+            client.storage.from_("documents").upload(
+                chemin, fichier.getvalue(), {"content-type": fichier.type}
+            )
+            client.table("documents").insert(
+                {
+                    "dossier_id": dossier_id,
+                    "type": type_doc,
+                    "nom_fichier": fichier.name,
+                    "chemin_storage": chemin,
+                }
+            ).execute()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Envoi impossible : {e}")
+
+    documents = (
+        client.table("documents")
+        .select("*")
+        .eq("dossier_id", dossier_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+    if not documents:
+        st.info("Aucun document pour le moment.")
+    for d in documents:
+        col1, col2, col3 = st.columns([3, 1, 1])
+        col1.write(f"**{TYPES_DOCUMENTS.get(d['type'], d['type'])}** : {d['nom_fichier']}")
+        try:
+            res = client.storage.from_("documents").create_signed_url(
+                d["chemin_storage"], 300
+            )
+            lien = res.get("signedURL") or res.get("signedUrl")
+            if lien:
+                col2.link_button("Ouvrir", lien)
+        except Exception:
+            col2.write("—")
+        if col3.button("Supprimer", key=f"suppr_{d['id']}"):
+            supprimer_document(d)
+            st.rerun()
+
+
+def vue_candidat(user):
+    dossiers = (
+        client.table("dossiers").select("*").eq("candidat_id", user.id).execute().data
+    )
+    if not dossiers:
+        st.subheader("Ouvre ton dossier")
+        niveau = st.radio(
+            "Quel niveau d'études vises-tu ?",
+            list(NIVEAUX),
+            format_func=lambda n: NIVEAUX[n],
+        )
+        if st.button("Créer mon dossier"):
+            try:
+                creer_dossier(user.id, niveau)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Création impossible : {e}")
+    else:
+        dossier = dossiers[0]
+        st.write(f"Dossier : **{NIVEAUX[dossier['niveau']]}**")
+        afficher_dossier(dossier["id"])
+
+
+def vue_accompagnateur():
+    dossiers = client.table("dossiers").select("*").execute().data
+    if not dossiers:
+        st.info("Aucun dossier pour le moment.")
+        return
+    profils = client.table("profiles").select("id, email").execute().data
+    emails = {p["id"]: p["email"] for p in profils}
+    options = {
+        d["id"]: f"{emails.get(d['candidat_id'], 'Candidat')} : {NIVEAUX[d['niveau']]}"
+        for d in dossiers
+    }
+    choix = st.selectbox("Dossier", list(options), format_func=lambda i: options[i])
+    afficher_dossier(choix)
+
+
+# ---------- Page principale ----------
 st.title("🎓 Accompagnement-Lux")
 
 if st.session_state.user is None:
@@ -62,11 +244,19 @@ if st.session_state.user is None:
             creer_compte(email2, mdp2)
 else:
     user = st.session_state.user
-    profil = (
-        client.table("profiles").select("*").eq("id", user.id).execute().data
-    )
+    profil = client.table("profiles").select("*").eq("id", user.id).execute().data
     role = profil[0]["role"] if profil else "inconnu"
 
-    st.success(f"Connectée : {user.email}")
-    st.write(f"Ton rôle : **{role}**")
+    st.caption(f"Connectée : {user.email} · rôle : {role}")
     st.button("Se déconnecter", on_click=se_deconnecter)
+
+    if role == "candidat":
+        vue_candidat(user)
+    elif role == "accompagnateur":
+        vue_accompagnateur()
+    elif role == "admin":
+        onglet1, onglet2 = st.tabs(["Mon dossier (test)", "Tous les dossiers"])
+        with onglet1:
+            vue_candidat(user)
+        with onglet2:
+            vue_accompagnateur()
